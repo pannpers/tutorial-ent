@@ -1,4 +1,4 @@
-package main
+package tutorial_ent
 
 import (
 	"context"
