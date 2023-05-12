@@ -5,6 +5,9 @@ package ent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"strconv"
 
 	"entgo.io/contrib/entgql"
 	"entgo.io/ent"
@@ -150,19 +153,14 @@ func (c *TodoConnection) build(nodes []*Todo, pager *todoPager, after *Cursor, f
 type TodoPaginateOption func(*todoPager) error
 
 // WithTodoOrder configures pagination ordering.
-func WithTodoOrder(order *TodoOrder) TodoPaginateOption {
-	if order == nil {
-		order = DefaultTodoOrder
-	}
-	o := *order
+func WithTodoOrder(order []*TodoOrder) TodoPaginateOption {
 	return func(pager *todoPager) error {
-		if err := o.Direction.Validate(); err != nil {
-			return err
+		for _, o := range order {
+			if err := o.Direction.Validate(); err != nil {
+				return err
+			}
 		}
-		if o.Field == nil {
-			o.Field = DefaultTodoOrder.Field
-		}
-		pager.order = &o
+		pager.order = append(pager.order, order...)
 		return nil
 	}
 }
@@ -180,7 +178,7 @@ func WithTodoFilter(filter func(*TodoQuery) (*TodoQuery, error)) TodoPaginateOpt
 
 type todoPager struct {
 	reverse bool
-	order   *TodoOrder
+	order   []*TodoOrder
 	filter  func(*TodoQuery) (*TodoQuery, error)
 }
 
@@ -191,8 +189,10 @@ func newTodoPager(opts []TodoPaginateOption, reverse bool) (*todoPager, error) {
 			return nil, err
 		}
 	}
-	if pager.order == nil {
-		pager.order = DefaultTodoOrder
+	for i, o := range pager.order {
+		if i > 0 && o.Field == pager.order[i-1].Field {
+			return nil, fmt.Errorf("duplicate order direction %q", o.Direction)
+		}
 	}
 	return pager, nil
 }
@@ -205,48 +205,100 @@ func (p *todoPager) applyFilter(query *TodoQuery) (*TodoQuery, error) {
 }
 
 func (p *todoPager) toCursor(t *Todo) Cursor {
-	return p.order.Field.toCursor(t)
+	cs := make([]any, 0, len(p.order))
+	for _, o := range p.order {
+		cs = append(cs, o.Field.toCursor(t).Value)
+	}
+	return Cursor{ID: t.ID, Value: cs}
 }
 
 func (p *todoPager) applyCursors(query *TodoQuery, after, before *Cursor) (*TodoQuery, error) {
-	direction := p.order.Direction
+	idDirection := entgql.OrderDirectionAsc
 	if p.reverse {
-		direction = direction.Reverse()
+		idDirection = entgql.OrderDirectionDesc
 	}
-	for _, predicate := range entgql.CursorsPredicate(after, before, DefaultTodoOrder.Field.column, p.order.Field.column, direction) {
+	fields, directions := make([]string, 0, len(p.order)), make([]OrderDirection, 0, len(p.order))
+	for _, o := range p.order {
+		fields = append(fields, o.Field.column)
+		direction := o.Direction
+		if p.reverse {
+			direction = direction.Reverse()
+		}
+		directions = append(directions, direction)
+	}
+	predicates, err := entgql.MultiCursorsPredicate(after, before, &entgql.MultiCursorsOptions{
+		FieldID:     DefaultTodoOrder.Field.column,
+		DirectionID: idDirection,
+		Fields:      fields,
+		Directions:  directions,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, predicate := range predicates {
 		query = query.Where(predicate)
 	}
 	return query, nil
 }
 
 func (p *todoPager) applyOrder(query *TodoQuery) *TodoQuery {
-	direction := p.order.Direction
-	if p.reverse {
-		direction = direction.Reverse()
+	var defaultOrdered bool
+	for _, o := range p.order {
+		direction := o.Direction
+		if p.reverse {
+			direction = direction.Reverse()
+		}
+		query = query.Order(o.Field.toTerm(direction.OrderTermOption()))
+		if o.Field.column == DefaultTodoOrder.Field.column {
+			defaultOrdered = true
+		}
+		switch o.Field.column {
+		case TodoOrderFieldChildrenCount.column:
+		default:
+			if len(query.ctx.Fields) > 0 {
+				query.ctx.AppendFieldOnce(o.Field.column)
+			}
+		}
 	}
-	query = query.Order(p.order.Field.toTerm(direction.OrderTermOption()))
-	if p.order.Field != DefaultTodoOrder.Field {
+	if !defaultOrdered {
+		direction := entgql.OrderDirectionAsc
+		if p.reverse {
+			direction = direction.Reverse()
+		}
 		query = query.Order(DefaultTodoOrder.Field.toTerm(direction.OrderTermOption()))
-	}
-	if len(query.ctx.Fields) > 0 {
-		query.ctx.AppendFieldOnce(p.order.Field.column)
 	}
 	return query
 }
 
 func (p *todoPager) orderExpr(query *TodoQuery) sql.Querier {
-	direction := p.order.Direction
-	if p.reverse {
-		direction = direction.Reverse()
-	}
-	if len(query.ctx.Fields) > 0 {
-		query.ctx.AppendFieldOnce(p.order.Field.column)
+	for _, o := range p.order {
+		switch o.Field.column {
+		case TodoOrderFieldChildrenCount.column:
+			direction := o.Direction
+			if p.reverse {
+				direction = direction.Reverse()
+			}
+			query = query.Order(o.Field.toTerm(direction.OrderTermOption()))
+		default:
+			if len(query.ctx.Fields) > 0 {
+				query.ctx.AppendFieldOnce(o.Field.column)
+			}
+		}
 	}
 	return sql.ExprFunc(func(b *sql.Builder) {
-		b.Ident(p.order.Field.column).Pad().WriteString(string(direction))
-		if p.order.Field != DefaultTodoOrder.Field {
-			b.Comma().Ident(DefaultTodoOrder.Field.column).Pad().WriteString(string(direction))
+		for _, o := range p.order {
+			direction := o.Direction
+			if p.reverse {
+				direction = direction.Reverse()
+			}
+			b.Ident(o.Field.column).Pad().WriteString(string(direction))
+			b.Comma()
 		}
+		direction := entgql.OrderDirectionAsc
+		if p.reverse {
+			direction = direction.Reverse()
+		}
+		b.Ident(DefaultTodoOrder.Field.column).Pad().WriteString(string(direction))
 	})
 }
 
@@ -298,6 +350,130 @@ func (t *TodoQuery) Paginate(
 	}
 	conn.build(nodes, pager, after, first, before, last)
 	return conn, nil
+}
+
+var (
+	// TodoOrderFieldText orders Todo by text.
+	TodoOrderFieldText = &TodoOrderField{
+		Value: func(t *Todo) (ent.Value, error) {
+			return t.Text, nil
+		},
+		column: todo.FieldText,
+		toTerm: todo.ByText,
+		toCursor: func(t *Todo) Cursor {
+			return Cursor{
+				ID:    t.ID,
+				Value: t.Text,
+			}
+		},
+	}
+	// TodoOrderFieldCreatedAt orders Todo by created_at.
+	TodoOrderFieldCreatedAt = &TodoOrderField{
+		Value: func(t *Todo) (ent.Value, error) {
+			return t.CreatedAt, nil
+		},
+		column: todo.FieldCreatedAt,
+		toTerm: todo.ByCreatedAt,
+		toCursor: func(t *Todo) Cursor {
+			return Cursor{
+				ID:    t.ID,
+				Value: t.CreatedAt,
+			}
+		},
+	}
+	// TodoOrderFieldStatus orders Todo by status.
+	TodoOrderFieldStatus = &TodoOrderField{
+		Value: func(t *Todo) (ent.Value, error) {
+			return t.Status, nil
+		},
+		column: todo.FieldStatus,
+		toTerm: todo.ByStatus,
+		toCursor: func(t *Todo) Cursor {
+			return Cursor{
+				ID:    t.ID,
+				Value: t.Status,
+			}
+		},
+	}
+	// TodoOrderFieldPriority orders Todo by priority.
+	TodoOrderFieldPriority = &TodoOrderField{
+		Value: func(t *Todo) (ent.Value, error) {
+			return t.Priority, nil
+		},
+		column: todo.FieldPriority,
+		toTerm: todo.ByPriority,
+		toCursor: func(t *Todo) Cursor {
+			return Cursor{
+				ID:    t.ID,
+				Value: t.Priority,
+			}
+		},
+	}
+	// TodoOrderFieldChildrenCount orders by CHILDREN_COUNT.
+	TodoOrderFieldChildrenCount = &TodoOrderField{
+		Value: func(t *Todo) (ent.Value, error) {
+			return t.Value("children_count")
+		},
+		column: "children_count",
+		toTerm: func(opts ...sql.OrderTermOption) todo.OrderOption {
+			return todo.ByChildrenCount(
+				append(opts, sql.OrderSelectAs("children_count"))...,
+			)
+		},
+		toCursor: func(t *Todo) Cursor {
+			cv, _ := t.Value("children_count")
+			return Cursor{
+				ID:    t.ID,
+				Value: cv,
+			}
+		},
+	}
+)
+
+// String implement fmt.Stringer interface.
+func (f TodoOrderField) String() string {
+	var str string
+	switch f.column {
+	case TodoOrderFieldText.column:
+		str = "TEXT"
+	case TodoOrderFieldCreatedAt.column:
+		str = "CREATED_AT"
+	case TodoOrderFieldStatus.column:
+		str = "STATUS"
+	case TodoOrderFieldPriority.column:
+		str = "PRIORITY"
+	case TodoOrderFieldChildrenCount.column:
+		str = "CHILDREN_COUNT"
+	}
+	return str
+}
+
+// MarshalGQL implements graphql.Marshaler interface.
+func (f TodoOrderField) MarshalGQL(w io.Writer) {
+	io.WriteString(w, strconv.Quote(f.String()))
+}
+
+// UnmarshalGQL implements graphql.Unmarshaler interface.
+func (f *TodoOrderField) UnmarshalGQL(v interface{}) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("TodoOrderField %T must be a string", v)
+	}
+	switch str {
+	case "TEXT":
+		*f = *TodoOrderFieldText
+	case "CREATED_AT":
+		*f = *TodoOrderFieldCreatedAt
+	case "STATUS":
+		*f = *TodoOrderFieldStatus
+	case "PRIORITY":
+		*f = *TodoOrderFieldPriority
+	case "CHILDREN_COUNT":
+		*f = *TodoOrderFieldChildrenCount
+	default:
+		return fmt.Errorf("%s is not a valid TodoOrderField", str)
+	}
+	return nil
 }
 
 // TodoOrderField defines the ordering field of Todo.

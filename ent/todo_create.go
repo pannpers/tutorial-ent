@@ -68,21 +68,6 @@ func (tc *TodoCreate) SetNillablePriority(i *int) *TodoCreate {
 	return tc
 }
 
-// AddChildIDs adds the "children" edge to the Todo entity by IDs.
-func (tc *TodoCreate) AddChildIDs(ids ...int) *TodoCreate {
-	tc.mutation.AddChildIDs(ids...)
-	return tc
-}
-
-// AddChildren adds the "children" edges to the Todo entity.
-func (tc *TodoCreate) AddChildren(t ...*Todo) *TodoCreate {
-	ids := make([]int, len(t))
-	for i := range t {
-		ids[i] = t[i].ID
-	}
-	return tc.AddChildIDs(ids...)
-}
-
 // SetParentID sets the "parent" edge to the Todo entity by ID.
 func (tc *TodoCreate) SetParentID(id int) *TodoCreate {
 	tc.mutation.SetParentID(id)
@@ -100,6 +85,21 @@ func (tc *TodoCreate) SetNillableParentID(id *int) *TodoCreate {
 // SetParent sets the "parent" edge to the Todo entity.
 func (tc *TodoCreate) SetParent(t *Todo) *TodoCreate {
 	return tc.SetParentID(t.ID)
+}
+
+// AddChildIDs adds the "children" edge to the Todo entity by IDs.
+func (tc *TodoCreate) AddChildIDs(ids ...int) *TodoCreate {
+	tc.mutation.AddChildIDs(ids...)
+	return tc
+}
+
+// AddChildren adds the "children" edges to the Todo entity.
+func (tc *TodoCreate) AddChildren(t ...*Todo) *TodoCreate {
+	ids := make([]int, len(t))
+	for i := range t {
+		ids[i] = t[i].ID
+	}
+	return tc.AddChildIDs(ids...)
 }
 
 // Mutation returns the TodoMutation object of the builder.
@@ -217,26 +217,10 @@ func (tc *TodoCreate) createSpec() (*Todo, *sqlgraph.CreateSpec) {
 		_spec.SetField(todo.FieldPriority, field.TypeInt, value)
 		_node.Priority = value
 	}
-	if nodes := tc.mutation.ChildrenIDs(); len(nodes) > 0 {
-		edge := &sqlgraph.EdgeSpec{
-			Rel:     sqlgraph.O2M,
-			Inverse: true,
-			Table:   todo.ChildrenTable,
-			Columns: []string{todo.ChildrenColumn},
-			Bidi:    false,
-			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(todo.FieldID, field.TypeInt),
-			},
-		}
-		for _, k := range nodes {
-			edge.Target.Nodes = append(edge.Target.Nodes, k)
-		}
-		_spec.Edges = append(_spec.Edges, edge)
-	}
 	if nodes := tc.mutation.ParentIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
-			Inverse: false,
+			Inverse: true,
 			Table:   todo.ParentTable,
 			Columns: []string{todo.ParentColumn},
 			Bidi:    false,
@@ -247,7 +231,23 @@ func (tc *TodoCreate) createSpec() (*Todo, *sqlgraph.CreateSpec) {
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.todo_parent = &nodes[0]
+		_node.todo_children = &nodes[0]
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := tc.mutation.ChildrenIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   todo.ChildrenTable,
+			Columns: []string{todo.ChildrenColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(todo.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	return _node, _spec

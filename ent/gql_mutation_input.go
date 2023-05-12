@@ -14,8 +14,8 @@ type CreateTodoInput struct {
 	CreatedAt *time.Time
 	Status    *todo.Status
 	Priority  *int
-	ChildIDs  []int
 	ParentID  *int
+	ChildIDs  []int
 }
 
 // Mutate applies the CreateTodoInput on the TodoMutation builder.
@@ -30,11 +30,11 @@ func (i *CreateTodoInput) Mutate(m *TodoMutation) {
 	if v := i.Priority; v != nil {
 		m.SetPriority(*v)
 	}
-	if v := i.ChildIDs; len(v) > 0 {
-		m.AddChildIDs(v...)
-	}
 	if v := i.ParentID; v != nil {
 		m.SetParentID(*v)
+	}
+	if v := i.ChildIDs; len(v) > 0 {
+		m.AddChildIDs(v...)
 	}
 }
 

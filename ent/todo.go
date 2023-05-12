@@ -27,17 +27,17 @@ type Todo struct {
 	Priority int `json:"priority,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the TodoQuery when eager-loading is set.
-	Edges        TodoEdges `json:"edges"`
-	todo_parent  *int
-	selectValues sql.SelectValues
+	Edges         TodoEdges `json:"edges"`
+	todo_children *int
+	selectValues  sql.SelectValues
 }
 
 // TodoEdges holds the relations/edges for other nodes in the graph.
 type TodoEdges struct {
-	// Children holds the value of the children edge.
-	Children []*Todo `json:"children,omitempty"`
 	// Parent holds the value of the parent edge.
 	Parent *Todo `json:"parent,omitempty"`
+	// Children holds the value of the children edge.
+	Children []*Todo `json:"children,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
 	loadedTypes [2]bool
@@ -47,19 +47,10 @@ type TodoEdges struct {
 	namedChildren map[string][]*Todo
 }
 
-// ChildrenOrErr returns the Children value or an error if the edge
-// was not loaded in eager-loading.
-func (e TodoEdges) ChildrenOrErr() ([]*Todo, error) {
-	if e.loadedTypes[0] {
-		return e.Children, nil
-	}
-	return nil, &NotLoadedError{edge: "children"}
-}
-
 // ParentOrErr returns the Parent value or an error if the edge
 // was not loaded in eager-loading, or loaded but was not found.
 func (e TodoEdges) ParentOrErr() (*Todo, error) {
-	if e.loadedTypes[1] {
+	if e.loadedTypes[0] {
 		if e.Parent == nil {
 			// Edge was loaded but was not found.
 			return nil, &NotFoundError{label: todo.Label}
@@ -67,6 +58,15 @@ func (e TodoEdges) ParentOrErr() (*Todo, error) {
 		return e.Parent, nil
 	}
 	return nil, &NotLoadedError{edge: "parent"}
+}
+
+// ChildrenOrErr returns the Children value or an error if the edge
+// was not loaded in eager-loading.
+func (e TodoEdges) ChildrenOrErr() ([]*Todo, error) {
+	if e.loadedTypes[1] {
+		return e.Children, nil
+	}
+	return nil, &NotLoadedError{edge: "children"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -80,7 +80,7 @@ func (*Todo) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullString)
 		case todo.FieldCreatedAt:
 			values[i] = new(sql.NullTime)
-		case todo.ForeignKeys[0]: // todo_parent
+		case todo.ForeignKeys[0]: // todo_children
 			values[i] = new(sql.NullInt64)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -129,10 +129,10 @@ func (t *Todo) assignValues(columns []string, values []any) error {
 			}
 		case todo.ForeignKeys[0]:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
-				return fmt.Errorf("unexpected type %T for edge-field todo_parent", value)
+				return fmt.Errorf("unexpected type %T for edge-field todo_children", value)
 			} else if value.Valid {
-				t.todo_parent = new(int)
-				*t.todo_parent = int(value.Int64)
+				t.todo_children = new(int)
+				*t.todo_children = int(value.Int64)
 			}
 		default:
 			t.selectValues.Set(columns[i], values[i])
@@ -147,14 +147,14 @@ func (t *Todo) Value(name string) (ent.Value, error) {
 	return t.selectValues.Get(name)
 }
 
-// QueryChildren queries the "children" edge of the Todo entity.
-func (t *Todo) QueryChildren() *TodoQuery {
-	return NewTodoClient(t.config).QueryChildren(t)
-}
-
 // QueryParent queries the "parent" edge of the Todo entity.
 func (t *Todo) QueryParent() *TodoQuery {
 	return NewTodoClient(t.config).QueryParent(t)
+}
+
+// QueryChildren queries the "children" edge of the Todo entity.
+func (t *Todo) QueryChildren() *TodoQuery {
+	return NewTodoClient(t.config).QueryChildren(t)
 }
 
 // Update returns a builder for updating this Todo.
